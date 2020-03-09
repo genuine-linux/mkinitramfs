@@ -1,0 +1,313 @@
+#!/bin/bash
+# This file based in part on the mkinitramfs script for the LFS LiveCD
+# written by Alexander E. Patrakov and Jeremy Huntwork.
+
+_VERSION="0.8-genuine"
+_ARCH="$(uname -m)";
+
+source /etc/mkinitramfs.conf
+
+copy()
+{
+  local file
+
+  if [ "$2" == "lib" ]; then
+    file=$(PATH=/lib:/usr/lib type -p $1)
+  else
+    file=$(type -p $1)
+  fi
+
+  if [ -n $file ] ; then
+    cp $file $WDIR/$2
+  else
+    echo "Missing required file: $1 for directory $2"
+    rm -rf $WDIR
+    exit 1
+  fi
+}
+
+if [ -z $1 ] ; then
+  INITRAMFS_FILE=/boot/initrd.img-$_ARCH-no-kmods
+else
+  KERNEL_VERSION=$1
+  INITRAMFS_FILE=/boot/initrd.img-$KERNEL_VERSION-$_ARCH
+fi
+
+if [ -n "$KERNEL_VERSION" ] && [ ! -d "/lib/modules/$1" ] ; then
+  echo "No modules directory named $1"
+  exit 1
+fi
+
+if [ -f "$INITRAMFS_FILE" ]; then
+	echo "[(·]) mkinitrafs ($_VERSION) Renaming$INITRAMFS_FILE to $INITRAMFS_FILE.old ... "
+	mv $INITRAMFS_FILE $INITRAMFS_FILE.old
+fi
+
+printf "[(·)] mkinitrams ($_VERSION) Creating $INITRAMFS_FILE ... "
+
+binfiles="sh bash cat cp dd killall ls lsblk mkdir mknod mount du true false top tee touch sleep mkfifo mktemp"
+binfiles="$binfiles umount sed sleep ln rm uname find dd dmesg dirname strings stty tty renice ps ping pidof more"
+binfiles="$binfiles readlink basename loadkeys setsid chown chmod clear chvt env date cut df rc-status "
+
+if [ -x "/bin/busybox" ]; then
+	binfiles="$binfiles busybox "
+fi
+
+if [ -x "/usr/bin/plymouth" ]; then
+	binfiles="$binfiles plymouth plymouth-upstart-bridge "
+fi
+
+# Systemd installs udevadm in /bin. Other udev implementations have it in /sbin
+if [ -x /bin/udevadm ] ; then binfiles="$binfiles udevadm"; fi
+
+sbinfiles="modprobe blkid switch_root rc runscript start-stop-daemon supervise-daemon openrc openrc-init openrc-shutdown openrc-run rc rc-service rc-update reboot halt"
+
+#Optional files and locations
+for f in mdadm mdmon udevd udevadm; do
+  if [ -x /sbin/$f ] ; then sbinfiles="$sbinfiles $f"; fi
+done
+
+for f in plymouthd plymouth-set-default-theme; do
+  if [ -x /sbin/$f ] ; then sbinfiles="$sbinfiles $f"; fi
+done
+
+unsorted=$(mktemp /tmp/unsorted.XXXXXXXXXX)
+
+DATADIR=/usr/share/mkinitramfs
+INITIN=init.in
+
+# Create a temporary working directory
+WDIR=$(mktemp -d /tmp/initrd-work.XXXXXXXXXX)
+
+# Create base directory structure
+mkdir -p $WDIR/{root,bin,dev,lib/firmware,run,sbin,sys,proc,usr/share/fonts/truetype}
+mkdir -p $WDIR/etc/{dkms,modprobe.d,udev/rules.d,modules-load.d,plymouth,sysctl.d}
+
+touch $WDIR/etc/modprobe.d/modprobe.conf
+
+if [ ! -z "$MODULES" ]; then
+	for M in $MODULES; do
+		echo "$M" > $WDIR/etc/modules-load.d/${M}.conf
+	done
+fi
+
+cp -a /etc/issue \
+	/usr/share/mkinitramfs/issue.logo.only \
+	/usr/share/mkinitramfs/issue.logo.rescue \
+	/etc/inittab \
+	/etc/genuine-release \
+	/etc/os-release \
+	/etc/dircolors \
+	/etc/inputrc \
+	/etc/shells \
+	/etc/devfsd.conf \
+	/etc/sysctl.conf \
+	/etc/e2fsck.conf \
+	/etc/bashrc \
+	/etc/profile \
+	/etc/profile.d \
+	/etc/skel \
+	/etc/bash_completion.d $WDIR/etc
+
+ln -s lib $WDIR/lib64
+ln -s ../bin $WDIR/usr/bin
+
+# Create necessary device nodes
+mknod -m 640 $WDIR/dev/console c 5 1
+mknod -m 664 $WDIR/dev/null    c 1 3
+cp -a /dev/tty $WDIR/dev/
+
+# Install root profile and bashrc
+cp -a /etc/skel/.bash* /etc/skel/.profile $WDIR/root/
+
+# Install the udev configuration files
+if [ -f /etc/udev/udev.conf ]; then
+  cp /etc/udev/udev.conf $WDIR/etc/udev/udev.conf
+fi
+
+for file in $(find /etc/udev/rules.d/ -type f) ; do
+  cp $file $WDIR/etc/udev/rules.d
+done
+
+cp -a /etc/udev/hwdb.* $WDIR/etc/udev
+
+cp -a /lib/libudev* $WDIR/lib/
+
+# Install any firmware present
+cp -a /lib/firmware $WDIR/lib/
+
+# Install OpenRC libexec
+mkdir -p $WDIR/usr/libexec
+cp -a /usr/libexec/{bin,sh,version,sbin} $WDIR/usr/libexec/
+
+if [ -d "/usr/libexec/netifrc" ]; then
+	cp -a /usr/libexec/netifrc $WDIR/usr/libexec/
+fi
+
+# Plymouth (Splash screen)
+if [ -d "/usr/lib/plymouth" ]; then
+	mkdir -p $WDIR/usr/lib/plymouth
+	mkdir -p $WDIR/var/lib/plymouth
+	mkdir -p $WDIR/var/tmp
+	mkdir -p $WDIR/var/log
+	mkdir -p $WDIR/lib/rc/plugins
+	mkdir -p $WDIR/etc/fonts/conf.d
+	mkdir -p $WDIR/etc/fonts/conf.avail
+	mkdir -p $WDIR/usr/share/fonts/X11/TTF
+	mkdir -p $WDIR/usr/share/plymouth
+	cp -a /etc/plymouth/plymouthd.conf $WDIR/etc/plymouth
+	cp -a /usr/lib/libply-splash-core.so.4.0.0 $WDIR/usr/lib
+	cp -a /usr/lib/libply.so.4.0.0 $WDIR/usr/lib
+	cp -a /usr/lib/plymouth/fade-throbber.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/renderers/frame-buffer.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/renderers/drm.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/renderers/x11.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/label.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/details.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/two-step.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/script.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/tribar.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/text.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/space-flares.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/plymouth/throbgress.so $WDIR/usr/lib/plymouth
+	cp -a /usr/lib/libply-splash-graphics.so.4.0.0 $WDIR/usr/lib
+	cp -a /usr/lib/libply-boot-client.so.4.0.0 $WDIR/usr/lib
+	cp -a /usr/share/fonts/X11/TTF/bitwise.ttf $WDIR/usr/share/fonts/X11/TTF
+	cp -a /usr/share/plymouth/plymouthd.defaults $WDIR/usr/share/plymouth
+	cp -a /usr/share/plymouth/themes $WDIR/usr/share/plymouth
+	cp -a /usr/lib/libply-splash-graphics.so.4 $WDIR/usr/lib
+	cp -a /usr/lib/libply.so $WDIR/usr/lib
+	cp -a /usr/lib/libply.so.4 $WDIR/usr/lib
+	cp -a /usr/lib/libply-boot-client.so $WDIR/usr/lib
+	cp -a /usr/lib/libply-splash-core.so $WDIR/usr/lib
+	cp -a /usr/lib/libply-splash-graphics.so $WDIR/usr/lib
+	cp -a /usr/lib/libply-boot-client.so.4 $WDIR/usr/lib
+	cp -a /usr/lib/libply-splash-core.so.4 $WDIR/usr/lib
+	cp -a /lib/rc/plugins/plymouth.so $WDIR/lib/rc/plugins/
+	cp -a /etc/fonts/fonts.conf $WDIR/etc/fonts/
+	cp -a /etc/fonts/conf.d/60-latin.conf $WDIR/etc/fonts/conf.d/
+fi
+
+# Console fonts
+cp -a /usr/share/console* $WDIR/usr/share/
+
+# Keymaps
+cp -a /usr/share/key* $WDIR/usr/share/
+cp -a /usr/share/uni* $WDIR/usr/share/
+
+# Copy the RAID configuration file if present
+if [ -f /etc/mdadm.conf ] ; then
+  cp /etc/mdadm.conf $WDIR/etc
+fi
+
+# Init.d and OpenRC Runlevels
+cp -a /etc/init.d /etc/rc.conf /etc/conf.d /etc/local.d /etc/sysctl.d /etc/runlevels $WDIR/etc/
+cp -a /usr/share/openrc $WDIR/usr/share/
+
+# Install the init file
+install -m0755 $DATADIR/$INITIN $WDIR/init
+
+if [  -n "$KERNEL_VERSION" ] ; then
+  if [ -x /bin/kmod ] ; then
+    binfiles="$binfiles kmod"
+  else
+    binfiles="$binfiles lsmod"
+    sbinfiles="$sbinfiles insmod"
+  fi
+fi
+
+# Install basic binaries
+for f in $binfiles ; do
+  if [ -e /bin/$f ]; then d="/bin"; else d="/usr/bin"; fi
+  ldd $d/$f | sed "s/\t//" | cut -d " " -f1 >> $unsorted
+  copy $d/$f bin
+done
+
+# Add lvm if present
+if [ -x /sbin/lvm ] ; then sbinfiles="$sbinfiles lvm dmsetup"; fi
+
+for f in $sbinfiles ; do
+  ldd /sbin/$f | sed "s/\t//" | cut -d " " -f1 >> $unsorted
+  copy $f sbin
+done
+
+# Add udevd libraries if not in /sbin
+if [ -x /lib/udev/udevd ] ; then
+  ldd /lib/udev/udevd | sed "s/\t//" | cut -d " " -f1 >> $unsorted
+elif [ -x /lib/systemd/systemd-udevd ] ; then
+  ldd /lib/systemd/systemd-udevd | sed "s/\t//" | cut -d " " -f1 >> $unsorted
+fi
+
+# Add module symlinks if appropriate
+if [ -n "$KERNEL_VERSION" ] && [ -x /bin/kmod ] ; then
+  ln -s kmod $WDIR/bin/lsmod
+  ln -s kmod $WDIR/bin/insmod
+fi
+
+# Add lvm symlinks if appropriate
+# Also copy the lvm.conf file
+if  [ -x /sbin/lvm ] ; then
+  ln -s lvm $WDIR/sbin/lvchange
+  ln -s lvm $WDIR/sbin/lvrename
+  ln -s lvm $WDIR/sbin/lvextend
+  ln -s lvm $WDIR/sbin/lvcreate
+  ln -s lvm $WDIR/sbin/lvdisplay
+  ln -s lvm $WDIR/sbin/lvscan
+
+  ln -s lvm $WDIR/sbin/pvchange
+  ln -s lvm $WDIR/sbin/pvck
+  ln -s lvm $WDIR/sbin/pvcreate
+  ln -s lvm $WDIR/sbin/pvdisplay
+  ln -s lvm $WDIR/sbin/pvscan
+
+  ln -s lvm $WDIR/sbin/vgchange
+  ln -s lvm $WDIR/sbin/vgcreate
+  ln -s lvm $WDIR/sbin/vgscan
+  ln -s lvm $WDIR/sbin/vgrename
+  ln -s lvm $WDIR/sbin/vgck
+  # Conf file(s)
+  cp -a /etc/lvm $WDIR/etc
+fi
+
+# Install libraries
+sort $unsorted | uniq | while read library ; do
+  if [ "$library" == "linux-vdso.so.1" ] ||
+     [ "$library" == "linux-gate.so.1" ] ||
+     [ "$library" == "" ]; then
+    continue
+  fi
+
+  copy $library lib
+done
+
+if [ -d /lib/udev ]; then
+  cp -a /lib/udev $WDIR/lib
+fi
+if [ -d /lib/systemd ]; then
+  cp -a /lib/systemd $WDIR/lib
+fi
+
+# Link busybox functions
+if [ -x /bin/busybox ]; then busybox --install -s $WDIR/bin; fi;
+
+# Install the kernel modules if requested
+if [ -n "$KERNEL_VERSION" ]; then
+  find                                                                        \
+     /lib/modules/$KERNEL_VERSION/kernel/{crypto,fs,lib}                      \
+     /lib/modules/$KERNEL_VERSION/kernel/drivers/{tty,acpi,input,block,ata,md,firewire,char,hid,pci,platform,mmc}      \
+     /lib/modules/$KERNEL_VERSION/kernel/drivers/{scsi,message,pcmcia,virtio,gpu,video,vhost,edac} \
+     /lib/modules/$KERNEL_VERSION/kernel/drivers/usb/{core,common,host,storage,image,serial}           \
+     -type f 2> /dev/null | cpio --make-directories -p --quiet $WDIR
+
+  cp /lib/modules/$KERNEL_VERSION/modules.{builtin,order}                     \
+            $WDIR/lib/modules/$KERNEL_VERSION
+
+  depmod -b $WDIR $KERNEL_VERSION
+fi
+
+( cd $WDIR ; find . | cpio -o -H newc --quiet | gzip -9 ) > $INITRAMFS_FILE
+
+# Remove the temporary directory and file
+rm -rf $WDIR $unsorted
+printf "done.\n"
+

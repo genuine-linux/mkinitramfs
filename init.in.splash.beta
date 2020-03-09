@@ -1,0 +1,234 @@
+#!/bin/sh
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+
+SETSID_CTTY="/bin/setsid --ctty"
+
+set_consolefont() {
+  $SETSID_CTTY /bin/setfont /usr/share/consolefonts/Lat2-Terminus16.psfu.gz
+}
+
+set_keymap() {
+  printf " * Setting up keymap: qwerty/es\n"
+  $SETSID_CTTY /bin/loadkeys -u "qwerty/es"
+}
+
+set_hostname() {
+  printf " * Setting up hostname: genuine\n"
+  $SETSID_STTY /bin/hostname genuine
+}
+
+load_minimal_modules() {
+   printf " * Loading kernel modules:"
+   for _m_ in i8042 atkbd psmouse mousedev evdev hid_generic \
+	   xhci_hcd xhci_pci usbcore usb_common usbhid \
+	   serio serio_raw hid libps2 ata_generic usb-storage \
+	   mbcache jbd2 crc32c_generic ext4 ext2 xfs; do 
+     /sbin/modprobe $_m_
+   done
+
+   printf "\n\n"
+   printf " * Disk devices: "; ( ls /dev/disk/* /dev/sd* /dev/sg* || printf "none" ) | awk -v ORS=" " '{print $1}'
+   printf " * Root filesystem: $root\n";
+}
+
+rescue_shell() {
+  # Load some modules #
+  load_minimal_modules
+
+  # Detect if there was any problem running selected runlevel #
+  if [ "$single" != "single" ]; then
+    printf "\n * OOooppss! Someone has killed Kenny!!!\n\n"
+    printf " * Fatal ERROR booting the kernel!\n"
+    printf " * Dropping you to a Rescue Shell.\n\n"
+  else
+    printf "\n * You have choosed to enter Rescue Mode!\n\n"
+    printf " * Type <exit> to reboot the system!\n\n"
+    printf " * Dropping you to a Rescue Shell.\n\n"
+  fi
+
+  set_keymap
+
+  set_hostname
+
+  export PS1="[rescue-sh]> "
+
+  _tty_=`/bin/tty`;
+
+  # Try to get device /dev/tty0 #
+  if [ -f "$_tty_" ]; then
+    printf " * Rescue Shell device: $_tty_\n\n"
+    /bin/getty -n -l /bin/bash 38400 $_tty_ linux
+  else
+    $SETSID_CTTY /bin/bash -i
+  fi
+}
+
+no_device() {
+   # No root device #
+   printf " * The device %s, which is supposed to contain the\n" $1
+   printf "   root file system, does not exist.\n"
+   printf "   Please fix this problem and exit this shell.\n\n"
+}
+
+no_mount() {
+   printf " * Could not mount device %s\n" $1
+   printf "   Sleeping forever. Please reboot and fix the kernel command line.\n\n"
+   printf "   Maybe the device is formatted with an unsupported file system?\n\n"
+   printf "   Or maybe filesystem type autodetection went wrong, in which case\n"
+   printf "   you should add the rootfstype=... parameter to the kernel command line.\n\n"
+   printf "   Available partitions:\n"
+}
+
+do_mount_root() {
+   mkdir /.root
+
+   [ -n "$rootflags" ] && rootflags="$rootflags,"
+   rootflags="$rootflags$ro"
+
+   case "$root" in
+      /dev/* ) device=$root ;;
+      UUID=* ) eval $root; device="/dev/disk/by-uuid/$UUID"  ;;
+      LABEL=*) eval $root; device="/dev/disk/by-label/$LABEL" ;;
+      ""     ) printf " * WARNING! No root device specified!\n\n" ; rescue_shell    ;;
+   esac
+
+   while [ ! -b "$device" ] ; do
+       no_device $device
+       rescue_shell
+   done
+
+   if ! mount -n -t "$rootfstype" -o "$rootflags" "$device" /.root ; then
+       no_mount $device
+       cat /proc/partitions
+       while true ; do sleep 10000 ; done
+   else
+       printf " * Successfully mounted root device $root\n\n"
+   fi
+}
+
+### Starting Genuine GNU/Linux initramfs ###
+
+init="/sbin/openrc-init"
+root=
+rootdelay=
+rootfstype=auto
+ro="ro"
+rootflags=
+device=
+single=
+quiet=
+splash=
+console=
+
+### Mount required filesystems ###
+
+mount -n -t devtmpfs devtmpfs /dev
+mount -n -t proc     proc     /proc
+mount -n -t sysfs    sysfs    /sys
+mount -n -t tmpfs    tmpfs    /run
+
+### Check cmdline params ###
+
+read -r cmdline < /proc/cmdline
+
+for param in $cmdline; do
+  case $param in
+    init=*      ) init=${param#init=}             ;;
+    root=*      ) root=${param#root=}             ;;
+    rootdelay=* ) rootdelay=${param#rootdelay=}   ;;
+    rootfstype=*) rootfstype=${param#rootfstype=} ;;
+    rootflags=* ) rootflags=${param#rootflags=}   ;;
+    ro          ) ro="ro"                         ;;
+    rw          ) ro="rw"                         ;;
+    single      ) ro="rw"; single="single"        ;;
+    quiet       ) ro="rw"; quiet="quiet"          ;;
+    splash      ) ro="rw"; splash="splash"        ;;
+    console=*   ) console=${param#console=}       ;;
+  esac
+done
+
+### Starting eudev ###
+
+# udevd location depends on version
+if [ -x /sbin/udevd ]; then
+  UDEVD=/sbin/udevd
+elif [ -x /lib/udev/udevd ]; then
+  UDEVD=/lib/udev/udevd
+elif [ -x /lib/systemd/systemd-udevd ]; then
+  UDEVD=/lib/systemd/systemd-udevd
+else
+  printf " * Cannot find udevd nor systemd-udevd!\n"
+  rescue_shell
+fi
+
+${UDEVD} --daemon --resolve-names=never
+/sbin/udevadm trigger
+/sbin/udevadm settle
+
+### Starting mdadm & lvm ###
+
+if [ -f /etc/mdadm.conf ] ; then mdadm -As                       ; fi
+if [ -x /sbin/vgchange  ] ; then /sbin/vgchange -a y > /dev/null ; fi
+if [ -n "$rootdelay"    ] ; then sleep "$rootdelay"              ; fi
+
+### Starting Genuine GNU/Linux ###
+
+printf "\n\n"
+
+if [ "$single" == "single" ] ; then
+  cat /etc/issue.logo.rescue
+else
+  cat /etc/issue.logo.only
+fi;
+
+genuine_release=`cat /etc/genuine-release`
+
+set_consolefont
+
+### Try to load plymouth ###
+if [ "$single" != "single" ] && \
+   [ "$splash" == "splash" ] && \
+   [ -x /sbin/plymouthd ] && \
+   [ -x /bin/plymouth ]; then
+  printf " * Starting Splash Screen ..."
+  
+  mkdir -p /var/run/plymouth /var/log
+ 
+  /sbin/plymouthd --tty=`/bin/tty` --attach-to-session \
+    --mode=boot --kernel-command-line="$quiet $splash" \
+    --pidfile=/var/run/plymouth/plymouth.pid --no-daemon
+
+  /bin/plymouth --ping && \
+    printf " ok.\n" || \
+    printf " failed!\n"
+  
+  /bin/plymouth show-splash ;
+  sleep 0.5;
+
+  /bin/plymouth display-message \
+    --text=" * $genuine_release is loading, please wait ..."
+  sleep 1;
+else
+  printf " * $genuine_release is loading, please wait ...\n\n"
+fi
+
+### Mount root filesystem ###
+
+do_mount_root
+
+### Check if user requested a rescue shell ###
+
+if [ "$single" == "single" ]; then
+  rescue_shell
+fi
+
+### Switching to rootfs ###
+/bin/plymouth update-root-fs --new-root-dir=/.root --read-write
+printf " * Switching initramfs to rootfs: $init $@\n\n"
+
+killall -w ${UDEVD##*/}
+
+exec switch_root /.root "$init" "$@"
+
