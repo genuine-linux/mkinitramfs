@@ -1,0 +1,5 @@
+# Begin /etc/profile
+
+source /etc/bashrc
+
+# End /etc/profile

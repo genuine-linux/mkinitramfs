@@ -1,0 +1,293 @@
+#!/bin/bash
+
+# Genuine GNU/Linux mkinitramfs-modules #
+
+source /etc/mkinitramfs.conf
+
+help() {
+    echo "Usage $0:
+    --help|-h               Shows this help.
+    --verbose|-v            Shows more details.
+    --required-modules|-r   Shows required modules to boot.
+    --known-modules|-k      Shows well known modules for many computers.
+    --fs-modules|-f         Shows computer filesytems modules.
+    --pci-modules|-p        Shows computer pci modules.
+    --usb-modules|-u        Shows computer usb modules.
+    --host-modules|-H       Shows host modules.
+    --all-modules|-a        Shows all modules found."
+}
+
+case $1 in
+  "--help"|"-h") help
+    shift
+    exit 0
+    ;;
+  "--verbose"|"-v") show_verbose="yes"
+    shift
+    ;;
+  "--required-modules"|"-r") show_required="yes"
+    shift
+    ;;
+  "--known-modules"|"-k") show_known="yes"
+    shift
+    ;;
+  "--fs-modules"|"-f") show_fs="yes"
+    shift
+    ;;
+  "--usb-modules"|"-u") show_usb="yes"
+    shift
+    ;;
+  "--pci-modules"|"-p") show_pci="yes"
+    shift
+    ;;
+  "--host-modules"|"-H") show_host="yes"
+    shift
+    ;;
+  "--all-modules"|"-a"|"") show_all="yes"
+    shift
+    ;;
+  *) help; 
+    shift
+    exit 1
+    ;;
+esac
+
+if [ "$show_verbose" == "yes" ]; then
+  echo ""
+  echo "[(·)] mkinitramfs-modules-$MKINITRAMFS_VERSION~genuine: Search initramfs kernel modules."
+  echo ""
+fi
+
+# Kernel version #
+kernel_version="${1:-$(uname -r)}"; shift
+kernel_modulesdir="/lib/modules/$kernel_version"
+kernel_modulesdep="$kernel_modulesdir/modules.dep"
+
+if [ "$show_verbose" == "yes" ]; then
+  echo "[(·)] Kernel modules.dep file: $kernel_modulesdep"
+  echo ""
+fi
+
+# Temporal file #
+
+ALL_MODULE_DEPS=""
+
+# TTY MODULES #
+TTY_MODULESDIR="$kernel_modulesdir/kernel/drivers/tty/serial"
+
+TTY_MODULES=$(find $TTY_MODULESDIR -type f | \
+    awk -F'/' '{print $NF}' | \
+    sed 's/\.ko\.xz//g' | sort | uniq | \
+    awk -v ORS=' ' '{print $1}')
+
+
+# REQUIRED MODULES DIRECTORIES # 
+REQUIRED_MODULESDIR="$kernel_modulesdir/kernel/crypto \
+$kernel_modulesdir/kernel/lib \
+$kernel_modulesdir/kernel/drivers/acpi \
+$kernel_modulesdir/kernel/drivers/input/keyboard \
+$kernel_modulesdir/kernel/drivers/input/mouse \
+$kernel_modulesdir/kernel/drivers/input/serio \
+$kernel_modulesdir/kernel/drivers/block \
+$kernel_modulesdir/kernel/drivers/md \
+$kernel_modulesdir/kernel/drivers/firewire \
+$kernel_modulesdir/kernel/drivers/char \
+$kernel_modulesdir/kernel/drivers/platform \
+$kernel_modulesdir/kernel/drivers/pps \
+$kernel_modulesdir/kernel/drivers/mmc \
+$kernel_modulesdir/kernel/drivers/message \
+$kernel_modulesdir/kernel/drivers/pcmcia \
+$kernel_modulesdir/kernel/drivers/virtio \
+$kernel_modulesdir/kernel/drivers/leds \
+$kernel_modulesdir/misc"
+
+#$kernel_modulesdir/kernel/drivers/scsi \
+
+# Required modules
+if [ "$show_verbose" == "yes" ] || \
+   [ "$show_all" == "yes" ] || \
+   [ "$show_required" == "yes" ]; then
+  
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Searching for required modules ..."
+  fi
+  
+  REQUIRED_MODULES=$(find $REQUIRED_MODULESDIR -type f | \
+    awk -F'/' '{print $NF}' | \
+    sed 's/\.ko\.xz//g' | sort | uniq | \
+    awk -v ORS=' ' '{print $1}')
+
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Required Kernel Modules found: $REQUIRED_MODULES"
+    echo ""
+    sleep 2
+  fi
+fi
+
+# Known modules
+if [ "$show_verbose" == "yes" ] || \
+   [ "$show_all" == "yes" ] || \
+   [ "$show_known" == "yes" ]; then
+  
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Searching for known modules ..."
+  fi
+
+  KNOWN_MODULES="libcrc32c crc16 crc32c-generic pcspkr fb_sys_fops vga16fb \
+drm usb-common usbcore usbserial idmouse serio serio-raw evdev i8042 atkbd libps2 \
+mousedev psmouse hid-generic usbhid uhid i2c-hid libata \
+scsi-mod usb-storage uas mbcache btrfs loop isofs squashfs \
+jbd2 xfs hfs hfsplus nfs reiserfs cramfs romfs"
+
+  #case "$(uname -m)" in
+  #  i*86) KNOWN_MODULES="$KNOWN_MODULES uvesafb"
+  #esac
+
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Known Kernel Modules found: $KNOWN_MODULES"
+    echo ""
+    sleep 2
+  fi
+fi
+
+# FS Modules
+if [ "$show_verbose" == "yes" ] || \
+   [ "$show_all" == "yes" ] || \
+   [ "$show_fs" == "yes" ]; then
+  
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Searching for filesystem modules ..."
+  fi
+
+  LSBLK_FILESYSTEMS=$(lsblk -f | grep -v ^NAME | \
+    awk '{if( $2 != "") print $2}' | sort | uniq)
+  
+  MOUNT_FILESYSTEMS=$(mount | awk '{print $5}' | \
+    sort | uniq | awk -v ORS=' ' '{print $1}')
+
+  FILESYSTEMS=$(echo $LSBLK_FILESYSTEMS $MOUNT_FILESYSTEMS | sort | uniq)
+
+  FS_MODULES=$(for m in $FILESYSTEMS; do \
+    find $kernel_modulesdir -name "${m}.ko.xz" -type f; done | \
+    awk -F'/' '{print $NF}' | \
+    sed 's/\.ko\.xz//g' | sort | uniq | \
+    awk -v ORS=' ' '{print $1}')
+
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Filesystem Kernel Modules found: $FS_MODULES"
+    echo ""
+    sleep 2
+  fi
+fi
+
+# PCI MODULES #
+if [ "$show_verbose" == "yes" ] || \
+   [ "$show_all" == "yes" ] || \
+   [ "$show_pci" == "yes" ]; then
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Searching for PCI modules ..."
+  fi
+  PCI_MODULES=$(lspci -kv | \
+    grep 'Kernel modules:' | \
+    awk -F':' '{print $(NB+2)}' | \
+    sed 's/,//g' | sort | uniq | \
+    awk -v ORS=' ' '{print $0}')
+
+  if [ "$show_verbose" == "yes" ]; then
+    echo "PCI Modules found: $PCI_MODULES"
+    echo ""
+    sleep 2
+  fi
+fi
+
+# USB MODULES #
+if [ "$show_verbose" == "yes" ] || \
+   [ "$show_all" == "yes" ] || \
+   [ "$show_usb" == "yes" ]; then
+  
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Searching for USB modules ..."
+  fi
+
+  USB_MODULES=$(lsusb -tv | \
+    grep 'Driver=' | \
+    awk '{print $(NF-1)}' | \
+    awk -F'=' '{print $NF}' | \
+    awk -v ORS=' ' -F'/' '{print $1}' | \
+    sed 's/,//g')
+
+  if [ "$show_verbose" == "yes" ]; then
+    echo "USB modules found: $USB_MODULES"
+    echo ""
+    sleep 2
+  fi
+fi
+
+# Host modules
+if [ "$show_verbose" == "yes" ] || \
+   [ "$show_all" == "yes" ] || \
+   [ "$show_host" == "yes" ]; then
+  
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Searching for host modules ..."
+  fi
+
+  HOST_MODULES=$(cat /proc/modules | awk -v ORS=' ' '{print $1}')
+
+  if [ "$show_verbose" == "yes" ]; then
+    echo "Host Kernel Modules found: $HOST_MODULES"
+    echo ""
+    sleep 2
+  fi
+fi
+
+# Calculate modules dependencies 
+if [ "$show_verbose" == "yes" ]; then
+  echo "Calculating all modules dependencies for: $TTY_MODULES $REQUIRED_MODULES $KNOWN_MODULES $FS_MODULES $PCI_MODULES $USB_MODULES $HOST_MODULES"
+fi
+
+for m in $TTY_MODULES $REQUIRED_MODULES $KNOWN_MODULES $FS_MODULES $PCI_MODULES $USB_MODULES $HOST_MODULES; do
+  if [ "$show_verbose" == "yes" ]; then
+    echo -n "Searching dependencies for module $m:"
+  fi
+  module_deps_path=$(grep "${m}.ko.xz:" $kernel_modulesdep | awk -F':' '{print $NF}')
+  for module_dep_path in $module_deps_path; do
+    module_dep=$(echo "$module_dep_path" | awk -F'/' '{print $NF}' | sed 's/\.ko\.xz//g')
+    ALL_MODULE_DEPS="$ALL_MODULE_DEPS $module_dep"
+    if [ "$show_verbose" == "yes" ]; then
+      echo "$module_dep" || echo ""
+    fi
+  done
+done
+
+MKINITRAMFS_MODULE_DEPS=$(echo $ALL_MODULE_DEPS | sort | uniq | awk -v ORS=' ' '{print $0}')
+
+for m in "$MKINITRAMFS_MODULE_DEPS"; do
+  if [ "$show_verbose" == "yes" ]; then
+    echo -n "Searching dependencies for module $m:"
+  fi
+  module_deps_path=$(grep "${m}.ko.xz:" $kernel_modulesdep | awk -F':' '{print $NF}')
+  for module_dep_path in $module_deps_path; do
+    module_dep=$(echo "$module_dep_path" | awk -F'/' '{print $NF}' | sed 's/\.ko\.xz//g')
+    MKINITRAMFS_MODULE_DEPS="$MKINITRAMFS_MODULE_DEPS $module_dep"
+    if [ "$show_verbose" == "yes" ]; then
+      echo "$module_dep" || echo ""
+    fi
+  done
+done
+
+if [ "$show_verbose" == "yes" ]; then
+  echo "All module dependencies: $MKINITRAMFS_MODULE_DEPS";
+  echo ""
+  sleep 1
+fi
+
+# MODULES TO COPY IN INITRAMFS #
+#if [ "$show_verbose" == "yes" ] || \
+#   [ "$show_all" == "yes" ]; then
+  echo "Depends: $MKINITRAMFS_MODULE_DEPS" | sort | uniq | awk -v ORS=' ' '{print $0"\n"}'
+  echo ""
+  MKINITRAMFS_MODULES="$TTY_MODULES $REQUIRED_MODULES $KNOWN_MODULES $FS_MODULES $PCI_MODULES $USB_MODULES $HOST_MODULES"
+  echo "Modules: $MKINITRAMFS_MODULES" | sort | uniq | awk -v ORS=' ' '{print $0"\n"}'
+#fi
+

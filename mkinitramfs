@@ -1,23 +1,41 @@
 #!/bin/bash
+
+# mkinitramfs - Genuine GNU/Linux 2020
+
 # This file based in part on the mkinitramfs script for the LFS LiveCD
 # written by Alexander E. Patrakov and Jeremy Huntwork.
 
-_VERSION="0.8-genuine"
-_ARCH="$(uname -m)";
+# Rewritten for Genuine by Antonio Cao.
 
-source /etc/mkinitramfs.conf
+# mkinitramfs #
+INITRAMFS="initramfs"
+PROG="mk$INITRAMFS"
 
-copy()
-{
+# initramfs init script #
+INIT="init"
+INITIN="init.in"
+
+# Load some configurations #
+source /etc/${PROG}.conf
+
+# mkinitramfs datadir #
+DATADIR=/usr/share/$PROG
+
+# Host information #
+HOSTARCH="$(uname -m)"
+RUNNING_KERNEL="$(uname -r)"
+
+# Create base directory structure
+copy() {
   local file
 
   if [ "$2" == "lib" ]; then
-    file=$(PATH=/lib:/usr/lib type -p $1)
+      file=$(PATH=/lib:/lib/elogind:/usr/lib:/usr/libexec type -p $1)
   else
     file=$(type -p $1)
   fi
 
-  if [ -n $file ] ; then
+  if [ -n $file ]; then
     cp $file $WDIR/$2
   else
     echo "Missing required file: $1 for directory $2"
@@ -26,12 +44,16 @@ copy()
   fi
 }
 
-if [ -z $1 ] ; then
-  INITRAMFS_FILE=/boot/initrd.img-$_ARCH-no-kmods
-else
-  KERNEL_VERSION=$1
-  INITRAMFS_FILE=/boot/initrd.img-$KERNEL_VERSION-$_ARCH
-fi
+case $1 in
+  no-kmods) INITRAMFS_FILE="/boot/initrd.img-$HOSTARCH-no-kmods"
+    ;;
+  *-genuine) KERNEL_VERSION="$1"
+    INITRAMFS_FILE="/boot/initrd.img-$KERNEL_VERSION-$HOSTARCH"
+    ;;
+  *) echo "ERROR! Unknown kernel version: $1"
+    exit 1
+    ;;
+esac
 
 if [ -n "$KERNEL_VERSION" ] && [ ! -d "/lib/modules/$1" ] ; then
   echo "No modules directory named $1"
@@ -39,51 +61,92 @@ if [ -n "$KERNEL_VERSION" ] && [ ! -d "/lib/modules/$1" ] ; then
 fi
 
 if [ -f "$INITRAMFS_FILE" ]; then
-	echo "[(·]) mkinitrafs ($_VERSION) Renaming$INITRAMFS_FILE to $INITRAMFS_FILE.old ... "
-	mv $INITRAMFS_FILE $INITRAMFS_FILE.old
+	printf "[(·)] $PROG-$MKINITRAMFS_VERSION: Backing up $INITRAMFS_FILE ... "
+	mv $INITRAMFS_FILE $INITRAMFS_FILE.bak
+  printf "done.\n"
 fi
 
-printf "[(·)] mkinitrams ($_VERSION) Creating $INITRAMFS_FILE ... "
+printf "[(·)] $PROG-$MKINITRAMFS_VERSION: Creating $INITRAMFS_FILE ... "
 
-binfiles="sh bash cat cp dd killall ls lsblk mkdir mknod mount du true false top tee touch sleep mkfifo mktemp"
-binfiles="$binfiles umount sed sleep ln rm uname find dd dmesg dirname strings stty tty renice ps ping pidof more"
-binfiles="$binfiles readlink basename loadkeys setsid chown chmod clear chvt env date cut df rc-status "
-
-if [ -x "/bin/busybox" ]; then
-	binfiles="$binfiles busybox "
-fi
-
-if [ -x "/usr/bin/plymouth" ]; then
-	binfiles="$binfiles plymouth plymouth-upstart-bridge "
-fi
-
-# Systemd installs udevadm in /bin. Other udev implementations have it in /sbin
-if [ -x /bin/udevadm ] ; then binfiles="$binfiles udevadm"; fi
-
-sbinfiles="modprobe blkid switch_root rc runscript start-stop-daemon supervise-daemon openrc openrc-init openrc-shutdown openrc-run rc rc-service rc-update reboot halt"
-
-#Optional files and locations
-for f in mdadm mdmon udevd udevadm; do
-  if [ -x /sbin/$f ] ; then sbinfiles="$sbinfiles $f"; fi
-done
-
-for f in plymouthd plymouth-set-default-theme; do
-  if [ -x /sbin/$f ] ; then sbinfiles="$sbinfiles $f"; fi
-done
-
+# Create a temporar unsorted file
 unsorted=$(mktemp /tmp/unsorted.XXXXXXXXXX)
-
-DATADIR=/usr/share/mkinitramfs
-INITIN=init.in
 
 # Create a temporary working directory
 WDIR=$(mktemp -d /tmp/initrd-work.XXXXXXXXXX)
 
-# Create base directory structure
-mkdir -p $WDIR/{root,bin,dev,lib/firmware,run,sbin,sys,proc,usr/share/fonts/truetype}
-mkdir -p $WDIR/etc/{dkms,modprobe.d,udev/rules.d,modules-load.d,plymouth,sysctl.d}
+binfiles="sh bash cat cp dd pkill killall ls lsblk mkdir mknod mount du tr true false top tee touch mkfifo mktemp setterm flock "
+binfiles="$binfiles uptime umount sed sleep ln rm mv uname find dd dmesg dirname strings stty tty renice ping ps pidof more dircolors "
+binfiles="$binfiles readlink basename loadkeys setsid chown chmod clear chvt env date cut df rc-status nslookup dig hostname stat "
+binfiles="$binfiles kbd_mode vlock showconsolefont setkeycodes setleds setmetamode loadunimap dumpkeys lsusb usbhid-dump gzip "
+binfiles="$binfiles deallocvt kbdinfo mapscrn fgconsole openvt setvtrgb setfont showkey getkeycodes keyctl dircolors findmnt "
+
+# Elogind
+if [ -x "/bin/loginctl" ]; then
+  binfiles="$binfiles loginctl busctl elogind-inhibit "
+fi
+
+# Busybox
+if [ -x "/bin/busybox" ]; then
+	binfiles="$binfiles busybox "
+fi
+
+# OpenRC
+sbinfiles="$sbinfiles rc runscript start-stop-daemon supervise-daemon request-key key.dns_resolver "
+sbinfiles="$sbinfiles openrc openrc-init openrc-shutdown openrc-run rc rc-service rc-update "
+
+# System sbinfiles
+sbinfiles="$sbinfiles kexec chroot "
+
+# FS Manteinance
+sbinfiles="$sbinfiles fsck fsck.cramfs fsck.ext3 fsck.minix ip ifconfig route losetup "
+sbinfiles="$sbinfiles fsck.ext2 fsck.ext4 reiserfsck blkid switch_root e2fsck "
+
+# Framebuffer
+sbinfiles="$sbinfiles fbset "
+
+# input-tools
+binfiles="$binfiles lsinput input-kbd input-send input-recv input-events "
+
+# GPM Console Mouse
+if [ -x /usr/sbin/gpm ]; then
+  sbinfiles="$sbinfiles gpm "
+  binfiles="$binfiles get-versions display-buttons gpm-root display-coords "
+  binfiles="$binfiles mouse-test hltest disable-paste mev "
+fi
+
+# pci utils #
+sbinfiles="$sbinfiles lspci setpci "
+
+# i2c-tools
+sbinfiles="$sbinfiles i2cdump i2ctransfer i2cdetect i2cget i2cset "
+
+#Optional files and locations
+for f in mdadm mdmon udevd udevadm ; do
+  if [ -x /sbin/$f ] ; then sbinfiles="$sbinfiles $f "; fi
+done
+
+mkdir -p $WDIR/{root,bin,sbin,lib/{firmware/brcm,rc/plugins},dev,run/plymouth,sys,proc}
+mkdir -p $WDIR/etc/{ld.so.conf.d,dkms,modprobe.d,udev/rules.d,modules-load.d,sysctl.d}
+mkdir -p $WDIR/usr/share/{terminfo,plymouth,fonts/X11/TTF,fonts/truetype}
+mkdir -p $WDIR/usr/{lib,libexec,bin,sbin}
+mkdir -p $WDIR/var/{lib/dkms,tmp,log,opt,spool}
 
 touch $WDIR/etc/modprobe.d/modprobe.conf
+
+# MODULES #
+KNOWN_MODULES="$(mkinitramfs-modules -k $KERNEL_VERSION | grep ^Modules | awk -F':' '{print $NF}')"
+
+# FS MODULES #
+FS_MODULES="$(mkinitramfs-modules -f $KERNEL_VERSION | grep ^Modules | awk -F':' '{print $NF}')"
+
+# PCI MODULES #
+PCI_MODULES="$(mkinitramfs-modules -p $KERNEL_VERSION | grep ^Modules | awk -F':' '{print $NF}')"
+
+# USB MODULES #
+USB_MODULES="$(mkinitramfs-modules -u $KERNEL_VERSION | grep ^Modules | awk -F':' '{print $NF}')"
+
+### MODULES TO LOAD ON BOOT ###
+MODULES="$KNOWN_MODULES $FS_MODULES $PCI_MODULES $USB_MODULES"
 
 if [ ! -z "$MODULES" ]; then
 	for M in $MODULES; do
@@ -91,101 +154,139 @@ if [ ! -z "$MODULES" ]; then
 	done
 fi
 
-cp -a /etc/issue \
-	/usr/share/mkinitramfs/issue.logo.only \
-	/usr/share/mkinitramfs/issue.logo.rescue \
+# ETC FILES #
+etc_conf="/etc/issue \
+	/usr/share/$PROG/issue.logo.only \
+	/usr/share/$PROG/issue.logo.rescue \
 	/etc/inittab \
+  /etc/fb.modes \
+  /etc/ld.so.conf \
 	/etc/genuine-release \
 	/etc/os-release \
 	/etc/dircolors \
 	/etc/inputrc \
+  /etc/request-key.conf \
 	/etc/shells \
 	/etc/devfsd.conf \
 	/etc/sysctl.conf \
-	/etc/e2fsck.conf \
-	/etc/bashrc \
-	/etc/profile \
-	/etc/profile.d \
+  /etc/profile.env \
+  /etc/motd \
+  /etc/rpc \
+  /etc/rmt \
+  /etc/rc_keymaps \
+  /etc/rc_maps.cfg \
+  /etc/slsh.rc \
+  /etc/kernel \
+  /etc/login.defs \
+  /etc/pm \
+  /etc/dkms \
+  /etc/mke2fs.conf \
+  /etc/ethertypes \
+  /etc/filesystems \
+  /etc/dhcpcd.conf \
 	/etc/skel \
-	/etc/bash_completion.d $WDIR/etc
+  /etc/env.d \
+  /etc/uart.conf \
+	/etc/bash_completion.d"
 
-ln -s lib $WDIR/lib64
-ln -s ../bin $WDIR/usr/bin
+for conf in $etc_conf; do
+  if [ -f "$conf" ] || [ -d "$conf" ]; then
+    cp -a $conf $WDIR/etc/
+  fi
+done;
+
+#cp /etc/mkinitramfs.conf $WDIR/etc/init.in.conf
+cp /etc/mkinitramfs.conf $WDIR/etc/
+
+ln -sfin /lib $WDIR/lib64
+ln -sfin /usr/lib $WDIR/usr/lib64
 
 # Create necessary device nodes
-mknod -m 640 $WDIR/dev/console c 5 1
-mknod -m 664 $WDIR/dev/null    c 1 3
-cp -a /dev/tty $WDIR/dev/
+cp --archive /dev/{null,console,tty,sda1} $WDIR/dev/
 
 # Install root profile and bashrc
-cp -a /etc/skel/.bash* /etc/skel/.profile $WDIR/root/
+cp -a $DATADIR/bashrc/bashrc-root $WDIR/.bashrc
+cp -a $DATADIR/bashrc/profile-root $WDIR/.profile
+cp -a $DATADIR/bashrc/bash-profile-root $WDIR/.bash_profile
+cp -a $DATADIR/bashrc/bash-logout-root $WDIR/.bash_logout
+cp -a $DATADIR/bashrc/bash-history-root $WDIR/.bash_history
+cp -a $DATADIR/bashrc/bashrc-system $WDIR/etc/bashrc
+cp -a $DATADIR/bashrc/profile-system $WDIR/etc/profile
+cp -a $DATADIR/bashrc/profile.env $WDIR/etc/profile.env
+cp -a $DATADIR/bashrc/profile.d $WDIR/etc/
+
+chmod +x $WDIR/.bashrc $WDIR/.bash_profile $WDIR/etc/bashrc \
+  $WDIR/etc/profile.env $WDIR/etc/profile $WDIR/etc/profile.d/*
+
+# Install bash files
+cp -a /usr/lib/bash $WDIR/usr/lib/
+cp -a /usr/share/bash-completion $WDIR/usr/share/
+
+for d in a d l r s v x; do
+  cp -a /usr/share/terminfo/${d} $WDIR/usr/share/terminfo/
+done
 
 # Install the udev configuration files
 if [ -f /etc/udev/udev.conf ]; then
   cp /etc/udev/udev.conf $WDIR/etc/udev/udev.conf
 fi
 
-for file in $(find /etc/udev/rules.d/ -type f) ; do
-  cp $file $WDIR/etc/udev/rules.d
+for file in $(find /etc/udev/rules.d/ -type f); do
+  cp $file $WDIR/etc/udev/rules.d/
+  if [ -f $WDIR/etc/udev/rules.d/99-iscsi.rules ]; then
+    rm $WDIR/etc/udev/rules.d/99-iscsi.rules
+  fi
+  if [ -f $WDIR/etc/udev/rules.d/80-docker.rules ]; then
+    rm $WDIR/etc/udev/rules.d/80-docker.rules
+  fi
 done
 
-cp -a /etc/udev/hwdb.* $WDIR/etc/udev
+#if [ -d /etc/udev/scripts ]; then
+#  cp -a /etc/udev/scripts $WDIR/etc/udev/
+#fi
+
+#cp -a /etc/udev/hwdb.* $WDIR/etc/udev
 
 cp -a /lib/libudev* $WDIR/lib/
 
 # Install any firmware present
-cp -a /lib/firmware $WDIR/lib/
+#cp -a /lib/firmware $WDIR/lib/
+
+# Install hardware data #
+cp -a /usr/share/hwdata $WDIR/usr/share/
+
+# Install only required firmware
+cp -a /lib/firmware/brcm/BCM-0bb4-0306.hcd $WDIR/lib/firmware/brcm/
+#cp -a /lib/firmware/brcm/BCM20702A1-0a5c-640b.hcd $WDIR/lib/firmware/brcm/
+
+# DKMS #
+cp -a /usr/sbin/dkms $WDIR/sbin/
+cp -a /usr/lib/dkms $WDIR/usr/lib/
+cp -a /var/lib/dkms/dkms_dbversion $WDIR/var/lib/dkms/
 
 # Install OpenRC libexec
-mkdir -p $WDIR/usr/libexec
-cp -a /usr/libexec/{bin,sh,version,sbin} $WDIR/usr/libexec/
+#cp -a /usr/libexec/{bin,sh,version,sbin,console,coreutils} $WDIR/usr/libexec/
+#cp -a /etc/sysctl.d $WDIR/etc/
+#cp -a /usr/share/openrc $WDIR/usr/share/
 
-if [ -d "/usr/libexec/netifrc" ]; then
-	cp -a /usr/libexec/netifrc $WDIR/usr/libexec/
-fi
+# NetifRC
+#if [ -d /usr/libexec/netifrc ]; then
+#	cp -a /usr/libexec/netifrc $WDIR/usr/libexec/
+#fi
 
-# Plymouth (Splash screen)
-if [ -d "/usr/lib/plymouth" ]; then
-	mkdir -p $WDIR/usr/lib/plymouth
-	mkdir -p $WDIR/var/lib/plymouth
-	mkdir -p $WDIR/var/tmp
-	mkdir -p $WDIR/var/log
-	mkdir -p $WDIR/lib/rc/plugins
-	mkdir -p $WDIR/etc/fonts/conf.d
-	mkdir -p $WDIR/etc/fonts/conf.avail
-	mkdir -p $WDIR/usr/share/fonts/X11/TTF
-	mkdir -p $WDIR/usr/share/plymouth
-	cp -a /etc/plymouth/plymouthd.conf $WDIR/etc/plymouth
-	cp -a /usr/lib/libply-splash-core.so.4.0.0 $WDIR/usr/lib
-	cp -a /usr/lib/libply.so.4.0.0 $WDIR/usr/lib
-	cp -a /usr/lib/plymouth/fade-throbber.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/renderers/frame-buffer.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/renderers/drm.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/renderers/x11.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/label.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/details.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/two-step.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/script.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/tribar.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/text.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/space-flares.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/plymouth/throbgress.so $WDIR/usr/lib/plymouth
-	cp -a /usr/lib/libply-splash-graphics.so.4.0.0 $WDIR/usr/lib
-	cp -a /usr/lib/libply-boot-client.so.4.0.0 $WDIR/usr/lib
-	cp -a /usr/share/fonts/X11/TTF/bitwise.ttf $WDIR/usr/share/fonts/X11/TTF
-	cp -a /usr/share/plymouth/plymouthd.defaults $WDIR/usr/share/plymouth
-	cp -a /usr/share/plymouth/themes $WDIR/usr/share/plymouth
-	cp -a /usr/lib/libply-splash-graphics.so.4 $WDIR/usr/lib
-	cp -a /usr/lib/libply.so $WDIR/usr/lib
-	cp -a /usr/lib/libply.so.4 $WDIR/usr/lib
-	cp -a /usr/lib/libply-boot-client.so $WDIR/usr/lib
-	cp -a /usr/lib/libply-splash-core.so $WDIR/usr/lib
-	cp -a /usr/lib/libply-splash-graphics.so $WDIR/usr/lib
-	cp -a /usr/lib/libply-boot-client.so.4 $WDIR/usr/lib
-	cp -a /usr/lib/libply-splash-core.so.4 $WDIR/usr/lib
-	cp -a /lib/rc/plugins/plymouth.so $WDIR/lib/rc/plugins/
-	cp -a /etc/fonts/fonts.conf $WDIR/etc/fonts/
-	cp -a /etc/fonts/conf.d/60-latin.conf $WDIR/etc/fonts/conf.d/
+# dhcpcd
+if [ -x /usr/sbin/dhcpcd ]; then
+  sbinfiles="$sbinfiles dhcpcd "
+  mkdir -p $WDIR/usr/share/dhcpcd/hooks
+  cp -a /usr/share/dhcpcd/hooks/* $WDIR/usr/share/dhcpcd/hooks/
+  cp -a /usr/lib/dhcpcd $WDIR/usr/lib/
+  cp -a /lib/dhcpcd $WDIR/lib/
+fi;
+
+
+# Elogin libraries
+if [ -d /lib/elogind ]; then
+  cp -a /lib/elogind $WDIR/lib/
 fi
 
 # Console fonts
@@ -193,26 +294,62 @@ cp -a /usr/share/console* $WDIR/usr/share/
 
 # Keymaps
 cp -a /usr/share/key* $WDIR/usr/share/
-cp -a /usr/share/uni* $WDIR/usr/share/
+#cp -a /usr/share/uni* $WDIR/usr/share/
 
 # Copy the RAID configuration file if present
 if [ -f /etc/mdadm.conf ] ; then
-  cp /etc/mdadm.conf $WDIR/etc
+  cp -a /etc/mdadm.conf $WDIR/etc
 fi
 
-# Init.d and OpenRC Runlevels
-cp -a /etc/init.d /etc/rc.conf /etc/conf.d /etc/local.d /etc/sysctl.d /etc/runlevels $WDIR/etc/
-cp -a /usr/share/openrc $WDIR/usr/share/
+if [ -f /usr/bin/plymouthd ]; then
+  mkdir -p $WDIR/usr/lib/plymouth/renderers
+  cp -a /etc/plymouth $WDIR/etc/
+  cp -a /usr/sbin/plymouthd $WDIR/usr/sbin/
+  cp -a /usr/bin/plymouth $WDIR/usr/bin/
+  cp -a /usr/bin/plymouth-upstart-bridge $WDIR/usr/bin/
+  cp -a /usr/sbin/plymouth-set-default-theme $WDIR/usr/sbin/
+  cp -a /usr/lib/plymouth/text.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/details.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/script.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/fade-throbber.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/tribar.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/space-flares.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/label.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/two-step.so $WDIR/usr/lib/plymouth/
+  cp -a /usr/lib/plymouth/renderers/frame-buffer.so $WDIR/usr/lib/plymouth/renderers/
+  cp -a /usr/lib/plymouth/renderers/drm.so $WDIR/usr/lib/plymouth/renderers/
+#  cp -a /usr/lib/plymouth/renderers/x11.so $WDIR/usr/lib/plymouth/renderers/
+#  cp -a /lib/rc/plugins/plymouth.so $WDIR/lib/rc/plugins/
+  cp -a /usr/lib/libply.so.5 $WDIR/usr/lib/
+  cp -a /usr/lib/libply.so $WDIR/usr/lib/
+  cp -a /usr/lib/libply.so.5.0.0 $WDIR/usr/lib/
+  cp -a /usr/lib/libply-splash-core.so.5 $WDIR/usr/lib/
+  cp -a /usr/lib/libply-splash-core.so $WDIR/usr/lib/
+  cp -a /usr/lib/libply-splash-core.so.5.0.0 $WDIR/usr/lib/
+  cp -a /usr/lib/libply-splash-graphics.so.5 $WDIR/usr/lib/
+  cp -a /usr/lib/libply-splash-graphics.so $WDIR/usr/lib/
+  cp -a /usr/lib/libply-splash-graphics.so.5.0.0 $WDIR/usr/lib/
+  cp -a /usr/lib/libply-boot-client.so.5.0.0 $WDIR/usr/lib/
+  cp -a /usr/lib/libply-boot-client.so $WDIR/usr/lib/
+  cp -a /usr/lib/libply-boot-client.so.5 $WDIR/usr/lib/
+  cp -a /usr/share/fonts/X11/TTF/bitwise.ttf $WDIR/usr/share/fonts/X11/TTF/
+  cp -a /usr/share/plymouth/plymouthd.defaults $WDIR/usr/share/plymouth
+fi
+
+# populate plymouth if available
+if [ -x /usr/libexec/plymouth/plymouth-populate-initrd ]; then
+        /usr/libexec/plymouth/plymouth-populate-initrd -t $WDIR/
+fi
 
 # Install the init file
 install -m0755 $DATADIR/$INITIN $WDIR/init
 
 if [  -n "$KERNEL_VERSION" ] ; then
   if [ -x /bin/kmod ] ; then
-    binfiles="$binfiles kmod"
+    binfiles="$binfiles kmod "
   else
-    binfiles="$binfiles lsmod"
-    sbinfiles="$sbinfiles insmod"
+    binfiles="$binfiles lsmod "
+    sbinfiles="$sbinfiles insmod "
   fi
 fi
 
@@ -224,18 +361,36 @@ for f in $binfiles ; do
 done
 
 # Add lvm if present
-if [ -x /sbin/lvm ] ; then sbinfiles="$sbinfiles lvm dmsetup"; fi
+if [ -x /sbin/lvm ]; then sbinfiles="$sbinfiles lvm dmsetup "; fi
 
-for f in $sbinfiles ; do
-  ldd /sbin/$f | sed "s/\t//" | cut -d " " -f1 >> $unsorted
+for f in $sbinfiles; do
+  if [ -e /sbin/$f ]; then d="/sbin"; else d="/usr/sbin"; fi
+  ldd $d/$f | sed "s/\t//" | cut -d " " -f1 >> $unsorted
   copy $f sbin
 done
 
+binscripts="ddcmon decode-edid decode-dimms decode-vaio lsusb.py usb-devices "
+for f in $binscripts; do
+  if [ -f "/bin/$f" ]; then
+    if [ -e /bin/$f ]; then d="/bin"; else d="/usr/bin"; fi
+    cp -a $d/$f $WDIR$d/
+  fi
+done
+
+sbinscripts="modprobe halt reboot fsck.reiserfs fsck.btrfs fsck.xfs "
+sbinscripts="$sbinscripts unicode_start kbdrate unicode_stop "
+sbinscripts="$sbinscripts modeline2fb i2c-stub-from-dump mkinitramfs-modules "
+
+for f in $sbinscripts; do
+  if [ -f "/sbin/$f" ]; then
+    if [ -e /sbin/$f ]; then d="/sbin"; else d="/usr/sbin"; fi
+    cp -a $d/$f $WDIR$d/
+  fi
+done
+
 # Add udevd libraries if not in /sbin
-if [ -x /lib/udev/udevd ] ; then
-  ldd /lib/udev/udevd | sed "s/\t//" | cut -d " " -f1 >> $unsorted
-elif [ -x /lib/systemd/systemd-udevd ] ; then
-  ldd /lib/systemd/systemd-udevd | sed "s/\t//" | cut -d " " -f1 >> $unsorted
+if [ -x /sbin/udevd ] ; then
+  ldd /sbin/udevd | sed "s/\t//" | cut -d " " -f1 >> $unsorted
 fi
 
 # Add module symlinks if appropriate
@@ -276,36 +431,91 @@ sort $unsorted | uniq | while read library ; do
      [ "$library" == "" ]; then
     continue
   fi
-
   copy $library lib
 done
 
 if [ -d /lib/udev ]; then
   cp -a /lib/udev $WDIR/lib
 fi
-if [ -d /lib/systemd ]; then
-  cp -a /lib/systemd $WDIR/lib
-fi
+
+# patch libfl.so
+cp -a /usr/lib/libfl.so $WDIR/lib/
+cp -a /usr/lib/libfl.so.* $WDIR/lib/
 
 # Link busybox functions
-if [ -x /bin/busybox ]; then busybox --install -s $WDIR/bin; fi;
+if [ -x /bin/busybox ]; then
+  /bin/busybox --install -s $WDIR/bin
+  cp /usr/share/busybox/examples/dnsd.conf $WDIR/etc/
+  cp /usr/share/busybox/examples/mdev.conf $WDIR/etc/
+  for prog in $(ls $WDIR/sbin); do
+    if [ -f "$WDIR/bin/$prog" ]; then
+      rm $WDIR/bin/$prog
+    fi
+  done
+fi;
 
 # Install the kernel modules if requested
 if [ -n "$KERNEL_VERSION" ]; then
-  find                                                                        \
-     /lib/modules/$KERNEL_VERSION/kernel/{crypto,fs,lib}                      \
-     /lib/modules/$KERNEL_VERSION/kernel/drivers/{tty,acpi,input,block,ata,md,firewire,char,hid,pci,platform,mmc}      \
-     /lib/modules/$KERNEL_VERSION/kernel/drivers/{scsi,message,pcmcia,virtio,gpu,video,vhost,edac} \
-     /lib/modules/$KERNEL_VERSION/kernel/drivers/usb/{core,common,host,storage,image,serial}           \
-     -type f 2> /dev/null | cpio --make-directories -p --quiet $WDIR
+#  find                                                                        \
+#     /lib/modules/$KERNEL_VERSION/kernel/{crypto,fs,lib}                      \
+#     /lib/modules/$KERNEL_VERSION/kernel/drivers/{tty/serial,acpi,input,block,ata,md,firewire,char,hid,pci,platform,mmc}      \
+#     /lib/modules/$KERNEL_VERSION/kernel/drivers/{scsi,message,pcmcia,virtio,gpu,video,vhost,edac,leds,virt} \
+#     /lib/modules/$KERNEL_VERSION/kernel/drivers/usb/{core,common,host,storage,image,serial,ptp,net/phy}           \
+#     /lib/modules/$KERNEL_VERSION/kernel/net/{8021q,802,atm,ax25,bluetooh,bridge,can,ceph,core,dccp,dns_resolver}        \
+#     /lib/modules/$KERNEL_VERSION/kernel/net/{dsa,hsr,ieee802154,ife,ipv4,ipv6,kcm,key,l2tp,llc,mac80211,mac802154}        \
+#     /lib/modules/$KERNEL_VERSION/kernel/net/{netlink,netrom,packet,openvswitch,rfkill,rxrpc,sched,sctp,sunrpc}        \
+#     /lib/modules/$KERNEL_VERSION/kernel/net/{tls,unix,vmw_vsock,wimax,wireless,xfrm}        \
+#     /lib/modules/$KERNEL_VERSION/misc \
+#     -type f 2> /dev/null | cpio --make-directories -p --quiet $WDIR
+ 
+  # COPY ALL REQUIRED MODULES TO INITRAMFS #
+  for m in $(mkinitramfs-modules -H | awk -F':' '{print $NF}' | sort | uniq | awk -v ORS=' ' '{print $0}'); do
+    find /lib/modules/$KERNEL_VERSION -name "${m}*" \
+      -type f 2> /dev/null | grep -v "/sound/" | \
+      cpio --make-directories -p --quiet $WDIR &>/dev/null
+  done
 
-  cp /lib/modules/$KERNEL_VERSION/modules.{builtin,order}                     \
-            $WDIR/lib/modules/$KERNEL_VERSION
+  cp /lib/modules/$KERNEL_VERSION/modules.{builtin,order} \
+    $WDIR/lib/modules/$KERNEL_VERSION
 
   depmod -b $WDIR $KERNEL_VERSION
 fi
 
+find $WDIR/lib $WDIR/usr/lib $WDIR/bin $WDIR/sbin $WDIR/usr/bin $WDIR/usr/sbin $WDIR/usr/libexec -type f -exec chmod +x {} \; &>/dev/null
+find $WDIR -type f -name "*.la" -exec rm {} \; &>/dev/null
+
+cp -a /sbin/ldconfig $WDIR/sbin/
+chroot $WDIR /sbin/ldconfig &>/dev/null
+rm $WDIR/sbin/ldconfig
+
 ( cd $WDIR ; find . | cpio -o -H newc --quiet | gzip -9 ) > $INITRAMFS_FILE
+#( cd $WDIR ; find . | cpio -o -H newc --quiet | xz -z -9 ) > $INITRAMFS_FILE
+
+# Prepare early loading of microcode if available
+if ls /lib/firmware/intel-ucode/* >/dev/null 2>&1 ||
+   ls /lib/firmware/amd-ucode/*   >/dev/null 2>&1; then
+
+  # first empty WDIR to reuse it
+  rm -r $WDIR/*
+
+  DSTDIR=$WDIR/kernel/x86/microcode
+  mkdir -p $DSTDIR
+
+  if head -n7 /proc/cpuinfo | grep -q vendor | grep -q GenuineIntel; then
+    if [ -d /lib/firmware/intel-ucode ]; then
+      cat /lib/firmware/intel-ucode/* > $DSTDIR/GenuineIntel.bin
+    fi
+  else
+    if [ -d /lib/firmware/amd-ucode ]; then
+      cat /lib/firmware/amd-ucode/microcode_amd*.bin > $DSTDIR/AuthenticAMD.bin
+    fi
+  fi
+
+  ( cd $WDIR; find . | cpio -o -H newc --quiet ) > microcode.img
+  cat microcode.img $INITRAMFS_FILE > tmpfile
+  mv tmpfile $INITRAMFS_FILE
+  rm microcode.img
+fi
 
 # Remove the temporary directory and file
 rm -rf $WDIR $unsorted

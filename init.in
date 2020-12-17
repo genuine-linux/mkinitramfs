@@ -1,70 +1,225 @@
 #!/bin/sh
 
+### GENETIC RESCUE SHELL ###
+
+# Configure SHELL PATH #
 PATH=/bin:/usr/bin:/sbin:/usr/sbin
 export PATH
 
-SETSID_CTTY="/bin/setsid --ctty"
+# hostname #
+hostname="genuine"
 
-set_consolefont() {
-  $SETSID_CTTY /bin/setfont /usr/share/consolefonts/Lat2-Terminus16.psfu.gz
+# plymouth path #
+plymouth="/usr/bin/plymouth"
+plymouthd="/usr/sbin/plymouthd";
+
+# Console Keymap Configuration
+keymap="-u qwerty/es" # UNICODE
+windowkeys="YES"
+extended_keymaps="backspace keypad"
+dumpkeys_charset=""
+fix_euro="yes"
+erase="^H"
+unicode="YES"
+
+# Networking
+netdev="eth0"
+netaddr="10.0.2.15"
+netgw="10.0.2.2"
+use_dhcp="YES"
+
+# tty1 #
+tty_rescue="/dev/tty1"
+
+# bash rescue shell #
+bash_rescue="/bin/env -i HOME=/ TERM=$TERM SHELL=/bin/bash PATH=$PATH /bin/bash --login" 
+
+# setsid CTTY HACK
+#SETSID_CTTY="setsid --ctty"
+
+setsid_ctty_hack() {
+  command="$1"
+  /bin/setsid /bin/sh -l -c "exec $command <$tty_rescue >$tty_rescue 2>&1"
 }
 
+# Set Console Font
+set_consolefont() {
+  setsid_ctty_hack "/bin/setfont /usr/share/consolefonts/Lat2-Terminus16.psfu.gz"
+}
+
+# Set Terminal Encoding
+set_termencoding() {
+	# Set terminal encoding to either ASCII or UNICODE.
+	# See utf-8(7) for more information.
+	local termencoding="%@" termmsg="ASCII"
+	if [ "${unicode}" == "YES" ]; then
+		termencoding="%G"
+		termmsg="UTF-8"
+	fi
+
+  # Set terminal encoding
+	printf " * Setting terminal encoding [ $termmsg ]\n"
+	printf "\033%s" "$termencoding" >$tty_rescue
+
+	# Save the encoding for use immediately at boot
+	if [ ! -d "/usr/libexec/console" ]; then
+		mkdir -p /usr/libexec/console
+		if [ "${unicode}" == "YES " ]; then
+			echo "" > /usr/libexec/console/unicode
+		else
+			rm -f /usr/libexec/console/unicode
+		fi
+	fi
+}
+
+# Set Console Keymap
 set_keymap() {
-  printf " * Setting up keymap: qwerty/es\n"
-  $SETSID_CTTY /bin/loadkeys -u "qwerty/es"
+  # keymap is required
+	if [ -z "$keymap" ]; then
+		printf " * You need to setup keymap first!\n"
+		return 1
+	fi
+
+	# Force linux keycodes for PPC.
+	if [ -f /proc/sys/dev/mac_hid/keyboard_sends_linux_keycodes ]; then
+		echo 1 > /proc/sys/dev/mac_hid/keyboard_sends_linux_keycodes
+	fi
+
+	local wkeys= kmode="-a" msg="ASCII"
+	if [ "$unicode" == "YES" ]; then
+		kmode="-u"
+		msg="UTF-8"
+	fi
+
+  if [ "$windowkeys" == "YES " ]; then
+    wkeys="windowkeys"
+  fi
+  
+  # Set keyboard mode
+	printf " * Setting keyboard mode [ $msg ]\n"
+	setsid_ctty_hack "/bin/kbd_mode $kmode -C $tty_rescue"
+
+  # Loading key mappings
+	printf " * Loading key mappings [ $keymap ]\n"
+	setsid_ctty_hack "/bin/loadkeys -q $wkeys $keymap $extended_keymaps"
+
+  # Fix some fonts displaying the Euro
+	# if [ "$fix_euro" == "yes" ]; then
+  #  		printf " * Fixing font for euro symbol [ $fix_euro ]\n"
+	#	printf "altgr keycode 18 = U+20AC" | setsid_ctty_hack 'loadkeys -q -'
+	#fi
+}
+
+# Set console
+set_console() {
+  set_consolefont
+  set_termencoding
+  set_keymap
 }
 
 set_hostname() {
-  printf " * Setting up hostname: genuine\n"
-  $SETSID_STTY /bin/hostname genuine
+  printf " * Setting up hostname: [ $hostname ]\n"
+  setsid_ctty_hack "echo $hostname > /etc/hostname"
+  setsid_ctty_hack "/bin/hostname $hostname &>/dev/null"
 }
 
-load_minimal_modules() {
-   printf " * Loading kernel modules:"
-   for _m_ in i8042 atkbd psmouse mousedev evdev hid_generic \
-	   xhci_hcd xhci_pci usbcore usb_common usbhid \
-	   serio serio_raw hid libps2 ata_generic usb-storage \
-	   mbcache jbd2 crc32c_generic ext4 ext2 xfs; do 
-     /sbin/modprobe $_m_
-     printf " $_m_"
-   done
+start_networking() {
+  /sbin/ip a | grep -q "$netdev" && /sbin/ifconfig $netdev up &&
+  if [ "$use_dhcp" == "YES" ]; then
+    printf " * Starting dynamic network: [ $netdev ]\n"
+    /sbin/dhcpcd $netdev
+  else
+    printf " * Starting static network: [ $netdev ]\n"
+    /sbin/ifconfig $netdev $netaddr
+    /sbin/route add default gw $netgw
+  fi
+}
 
-   printf "\n\n"
-   printf " * Disk devices: "; ( ls /dev/disk/* /dev/sd* /dev/sg* || printf "none" ) | awk -v ORS=" " '{print $1}'
-   printf "\n\n * Root filesystem: $root\n"
+start_gpm() {
+  if [ -f /dev/input/mice ]; then
+    printf " * Starting console mouse: [ /dev/input/mice:imps2 ]\n"
+    /sbin/gpm -m /dev/input/mice -t imps2
+  fi
+  if [ -f /dev/misc/psaux ]; then
+    printf " * Starting console mouse: [ /dev/misc/psaux:ps2 ]\n"
+    /sbin/gpm -m /dev/misc/psaux -t ps2
+  fi
+  if [ -f /dev/tts/0 ]; then
+    printf " * Starting console mouse: [ /dev/tts/0:mman ]\n"
+    /sbin/gpm -m /dev/tts/0 -t mman
+  fi
+}
+
+stop_gpm() {
+  if [ -f /var/run/gpm.pid ]; then
+    printf " * Stopping console mouse: [ gpm ]\n"
+    /sbin/gpm -k
+  fi
+}
+
+load_modules() {
+  printf " * Loading modules: [ "
+
+  # KNOWN MODULES #
+  KNOWN_MODULES="$(/sbin/mkinitramfs-modules -k | grep ^Modules | awk -F':' '{print $NF}')"
+
+  # FS MODULES #
+  FS_MODULES="$(/sbin/mkinitramfs-modules -f | grep ^Modules | awk -F':' '{print $NF}')"
+
+  # PCI MODULES #
+  PCI_MODULES="$(/sbin/mkinitramfs-modules -p | grep ^Modules | awk -F':' '{print $NF}')"
+
+  # USB MODULES #
+  USB_MODULES="$(/sbin/mkinitramfs-modules -u | grep ^Modules | awk -F':' '{print $NF}')"
+
+  # ALL MODULES #
+  ALL_MODULES=$(echo $KNOWN_MODULES $FS_MODULES $PCI_MODULES $USB_MODULES | awk -v ORS=' ' '{print $0}')
+
+  for _m_ in $ALL_MODULES; do
+    /bin/lsmod | grep -w "^$_m_$" || /sbin/modprobe $_m_ && printf " $_m_"
+  done
+
+   printf " ]\n\n"
+   printf " * Disk devices: [ "; ( ls /dev/disk/* /dev/sd* /dev/sg* || printf "none" ) | awk -v ORS=" " '{print $1}'
+   printf " ]\n\n * Root filesystem: [ $root ]\n"
 }
 
 rescue_shell() {
   # Load some modules #
-  load_minimal_modules
+  load_modules
+
+  # Set console settings
+  set_console
+
+  # Load networking #
+  start_networking
+  
+  # Set machine hostname #
+  set_hostname "recueshell"
+
+  # Start console mouse #
+  start_gpm
 
   # Detect if there was any problem running selected runlevel #
   if [ "$single" != "single" ]; then
     printf "\n * OOooppss! Someone has killed Kenny!!!\n\n"
-    printf " * Fatal ERROR booting the kernel!\n"
-    printf " * Dropping you to a Rescue Shell.\n\n"
+    printf " * Fatal ERROR booting the kernel!\n\n"
   else
-    printf "\n * You have choosed to enter Rescue Mode!\n\n"
-    printf " * Type <exit> to reboot the system!\n\n"
-    printf " * Dropping you to a Rescue Shell.\n\n"
+    printf " * Dropping you to a Rescue Shell ($tty_rescue).\n"
+    printf " * Type <<exit>> to continue booting the system!\n\n"
   fi
 
-  set_keymap
-
-  set_hostname
-
-  export PS1="[rescue-sh]> "
-
-  _tty_=`/bin/tty`
-
-  # Try to get device /dev/tty0 #
-  if [ -f "$_tty_" ]; then
-    printf " * Rescue Shell device: $_tty_\n\n"
-    /bin/getty -n -l /bin/bash 38400 $_tty_ linux
+  # Try to get device /dev/tty1 #
+  if [ -f "$tty_rescue" ]; then
+    /bin/getty -n -l $bash_rescue 38400 $tty_rescue linux
   else
-    printf "\n"
-    $SETSID_CTTY /bin/bash -i
+    setsid_ctty_hack "$bash_rescue"
   fi
+
+  # stop console mouse #
+  gpm_stop
+
+  single=
 }
 
 no_device() {
@@ -93,7 +248,7 @@ do_mount_root() {
       /dev/* ) device=$root ;;
       UUID=* ) eval $root; device="/dev/disk/by-uuid/$UUID"  ;;
       LABEL=*) eval $root; device="/dev/disk/by-label/$LABEL" ;;
-      ""     ) printf " * WARNING! No root device specified!\n\n" ; rescue_shell    ;;
+      ""     ) printf " * WARNING! No root device specified!\n\n" ; rescue_shell ;;
    esac
 
    while [ ! -b "$device" ] ; do
@@ -101,13 +256,76 @@ do_mount_root() {
        rescue_shell
    done
 
-   if ! mount -n -t "$rootfstype" -o "$rootflags" "$device" /.root ; then
+   if ! /bin/mount -n -t "$rootfstype" -o "$rootflags" "$device" /.root ; then
        no_mount $device
-       cat /proc/partitions
+       /bin/cat /proc/partitions
        while true ; do sleep 10000 ; done
-   else
-       printf " * Successfully mounted root device $root\n\n"
+   #else
+   # printf " * Successfully mounted root device: [ $root ]\n"
    fi
+}
+
+do_try_resume()
+{
+   case "$resume" in
+      UUID=* ) eval $resume; resume="/dev/disk/by-uuid/$UUID"  ;;
+      LABEL=*) eval $resume; resume="/dev/disk/by-label/$LABEL" ;;
+   esac
+
+   if $noresume || ! [ -b "$resume" ]; then return; fi
+
+   ls -lH "$resume" | ( read x x x x maj min x
+       echo -n ${maj%,}:$min > /sys/power/resume )
+}
+
+start_plymouthd() {
+        udevadm trigger --action=add --attr-match=class=0x030000 >/dev/null 2>&1
+        # first trigger graphics and tty subsystem
+        udevadm trigger --action=add \
+            --subsystem-match=graphics \
+            --subsystem-match=drm \
+            --subsystem-match=tty \
+            --subsystem-match=acpi \
+            >/dev/null 2>&1
+
+        udevadm settle --timeout=180 >/dev/null 2>&1
+
+        #printf "Starting plymouth daemon\n"
+
+        mkdir -m 0755 /run/plymouth
+
+        #$plymouthd --attach-to-session --pid-file /run/plymouth/pid --mode=boot
+        $plymouthd --attach-to-session --pid-file /run/plymouth/pid # --no-boot-log
+        #$plymouth --sysinit
+        $plymouth --show-splash
+}
+
+#plymouth_displaymessage() {
+#  if [ -x $plymouth ]; then
+#    PLYMSG="$1"
+#    if $plymouth --ping; then
+#      $plymouth display-message --text "$PLYMSG"
+#    else
+#      printf "$PLYMSG"
+#    fi
+#  fi
+#}
+
+plymouth_newroot() {
+  if [ -x $plymouth ] && [ -d "/.root/root" ]; then
+    if $plymouth --ping; then
+      $plymouth --newroot="/.root"
+    fi
+  fi
+}
+
+plymouth_quit() {
+  if [ -x $plymouth ]; then
+    if $plymouth --ping; then
+      #$plymouth hidde-message --text "Starting Genuine GNU/Linux"
+      $plymouth quit --retain-splash
+    fi
+  fi
 }
 
 ### Starting Genuine GNU/Linux initramfs ###
@@ -119,6 +337,8 @@ rootfstype=auto
 ro="ro"
 rootflags=
 device=
+resume=
+noresume=false
 single=
 quiet=
 splash=
@@ -126,10 +346,48 @@ console=
 
 ### Mount required filesystems ###
 
-mount -n -t devtmpfs devtmpfs /dev
-mount -n -t proc     proc     /proc
-mount -n -t sysfs    sysfs    /sys
-mount -n -t tmpfs    tmpfs    /run
+[ ! -d /proc/self ] && \
+    mount -t proc -o nosuid,noexec,nodev proc /proc >/dev/null
+
+if [ "$?" != "0" ]; then
+    echo "Cannot mount proc on /proc! Compile the kernel with CONFIG_PROC_FS!"
+    exit 1
+fi
+
+[ ! -d /sys/kernel ] && \
+    mount -t sysfs -o nosuid,noexec,nodev sysfs /sys >/dev/null
+
+if [ "$?" != "0" ]; then
+    echo "Cannot mount sysfs on /sys! Compile the kernel with CONFIG_SYSFS!"
+    exit 1
+fi
+
+mount -t devtmpfs -o mode=0755,noexec,nosuid,strictatime devtmpfs /dev >/dev/null
+
+#/bin/mount -n -t devtmpfs devtmpfs /dev
+
+[ ! -h /dev/fd ] && ln -s /proc/self/fd /dev/fd >/dev/null 2>&1
+[ ! -h /dev/stdin ] && ln -s /proc/self/fd/0 /dev/stdin >/dev/null 2>&1
+[ ! -h /dev/stdout ] && ln -s /proc/self/fd/1 /dev/stdout >/dev/null 2>&1
+[ ! -h /dev/stderr ] && ln -s /proc/self/fd/2 /dev/stderr >/dev/null 2>&1
+
+mkdir -m 0755 /dev/pts
+mount -t devpts -o gid=5,mode=620,noexec,nosuid devpts /dev/pts >/dev/null
+
+mkdir -m 0755 /dev/shm
+mount -t tmpfs -o mode=1777,noexec,nosuid,nodev,strictatime tmpfs /dev/shm >/dev/null
+
+#/bin/mount -n -t proc     proc     /proc
+#/bin/mount -n -t sysfs    sysfs    /sys
+
+#mount -n -t tmpfs    tmpfs    /run
+mount -t tmpfs -o mode=0755 tmpfs /run >/dev/null
+
+### Uevent helper ###
+if [ -x /sbin/mdev ]; then
+  echo /sbin/mdev > /proc/sys/kernel/hotplug
+  /sbin/mdev -s
+fi
 
 ### Check cmdline params ###
 
@@ -137,18 +395,21 @@ read -r cmdline < /proc/cmdline
 
 for param in $cmdline; do
   case $param in
-    init=*      ) init=${param#init=}             ;;
-    root=*      ) root=${param#root=}             ;;
-    rootdelay=* ) rootdelay=${param#rootdelay=}   ;;
-    rootfstype=*) rootfstype=${param#rootfstype=} ;;
-    rootflags=* ) rootflags=${param#rootflags=}   ;;
-    ro          ) ro="ro"                         ;;
-    rw          ) ro="rw"                         ;;
-    single      ) ro="rw"; single="single"        ;;
-    quiet       ) ro="rw"; quiet="quiet"          ;;
-    splash      ) ro="rw"; splash="splash"        ;;
-    console=*   ) console=${param#console=}       ;;
+    init=*      ) init=${param#init=};             ;;
+    root=*      ) root=${param#root=};             ;;
+    rootdelay=* ) rootdelay=${param#rootdelay=};   ;;
+    rootfstype=*) rootfstype=${param#rootfstype=}; ;;
+    rootflags=* ) rootflags=${param#rootflags=};   ;;
+    resume=*    ) resume=${param#resume=}          ;;
+    noresume    ) noresume=true                    ;;
+    ro          ) ro="ro";                         ;;
+    rw          ) ro="rw";                         ;;
+    single      ) ro="rw"; single="single";        ;;
+    quiet       ) ro="rw"; quiet="quiet";          ;;
+    splash      ) ro="rw"; splash="splash";        ;;
+    console=*   ) console=${param#console=};       ;;
   esac
+  while (( $# )); do shift; done
 done
 
 ### Starting eudev ###
@@ -158,51 +419,53 @@ if [ -x /sbin/udevd ]; then
   UDEVD=/sbin/udevd
 elif [ -x /lib/udev/udevd ]; then
   UDEVD=/lib/udev/udevd
-elif [ -x /lib/systemd/systemd-udevd ]; then
-  UDEVD=/lib/systemd/systemd-udevd
-else
-  printf " * Cannot find udevd nor systemd-udevd!\n"
-  rescue_shell
 fi
 
-${UDEVD} --daemon --resolve-names=never
-/sbin/udevadm trigger
-/sbin/udevadm settle
+${UDEVD} --daemon --resolve-names=never >/dev/null 2>&1
 
-### Starting mdadm & lvm ###
-
-if [ -f /etc/mdadm.conf ] ; then mdadm -As                       ; fi
-if [ -x /sbin/vgchange  ] ; then /sbin/vgchange -a y > /dev/null ; fi
-if [ -n "$rootdelay"    ] ; then sleep "$rootdelay"              ; fi
+udevadm control --reload >/dev/null 2>&1
+udevadm trigger --type=subsystems --action=add >/dev/null 2>&1
+udevadm trigger --type=devices --action=add >/dev/null 2>&1
+udevadm settle --timeout=0 >/dev/null 2>&1
 
 ### Starting Genuine GNU/Linux ###
 
 printf "\n\n"
 
+genuine_release=`cat /etc/genuine-release`
+
+# Show genuine logo
 if [ "$single" == "single" ] ; then
   cat /etc/issue.logo.rescue
 else
   cat /etc/issue.logo.only
-fi;
+  printf " * $genuine_release is loading, please wait ...\n\n"
+  start_plymouthd
+  #plymouth_displaymessage " * $genuine_release is loading, please wait ..."
+fi
 
-genuine_release=`cat /etc/genuine-release`
+### Starting mdadm & lvm ###
+if [ -f /etc/mdadm.conf ] ; then /sbin/mdadm -As                 ; fi
+if [ -x /sbin/vgchange  ] ; then /sbin/vgchange -a y > /dev/null ; fi
+if [ -n "$rootdelay"    ] ; then sleep "$rootdelay"              ; fi
 
-set_consolefont
-
-printf " * $genuine_release is loading, please wait ...\n\n"
+### Try resume ###
+do_try_resume
 
 ### Mount root filesystem ###
 do_mount_root
 
-### Check if user requested a rescue shell ###
+plymouth_newroot
+
+## Check if user requested a rescue shell ###
 if [ "$single" == "single" ]; then
   rescue_shell
+  /bin/setterm --reset
 fi
 
-### Switching to rootfs ###
-printf " * Switching initramfs to rootfs: $init $@\n\n"
+#plymouth_displaymessage " * Switching to rootfs: [ $init $@ ]"
 
-killall -w ${UDEVD##*/}
+/bin/killall -w ${UDEVD##*/}
 
-exec switch_root /.root "$init" "$@"
+exec /sbin/switch_root /.root "$init" "$@"
 

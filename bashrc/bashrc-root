@@ -1,0 +1,7 @@
+# Begin ~/.bashrc
+
+if [ -f "/etc/bashrc" ] ; then
+  source /etc/bashrc
+fi
+
+# End ~/.bashrc

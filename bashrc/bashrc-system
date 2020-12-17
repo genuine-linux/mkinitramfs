@@ -1,0 +1,55 @@
+# Begin /etc/profile
+
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+
+pathremove () {
+  local IFS=':'
+  local NEWPATH
+  local DIR
+  local PATHVARIABLE=${2:-PATH}
+  for DIR in ${!PATHVARIABLE} ; do
+    if [ "$DIR" != "$1" ] ; then
+      NEWPATH=${NEWPATH:+$NEWPATH:}$DIR
+    fi
+  done
+  export $PATHVARIABLE="$NEWPATH"
+}
+
+pathprepend () {
+  pathremove $1 $2
+  local PATHVARIABLE=${2:-PATH}
+  export $PATHVARIABLE="$1${!PATHVARIABLE:+:${!PATHVARIABLE}}"
+}
+
+pathappend () {
+  pathremove $1 $2
+  local PATHVARIABLE=${2:-PATH}
+  export $PATHVARIABLE="${!PATHVARIABLE:+${!PATHVARIABLE}:}$1"
+}
+
+export -f pathremove pathprepend pathappend
+
+# Set the initial path
+export PATH=/bin:/usr/bin:/usr/sbin:/sbin:/usr/sbin
+
+# Setup some environment variables.
+export HISTSIZE=1000
+export HISTIGNORE="&:[bf]g:exit"
+
+# Setup a red prompt for root and a green one for users.
+NORMAL="\[\e[0m\]"
+RED="\[\e[1;31m\]"
+GREEN="\[\e[1;32m\]"
+
+PS1="[${RED}rescuesh${NORMAL}]${RED}>${GREEN}\w${RED}> $NORMAL"
+
+for script in /etc/profile.d/*.sh ; do
+  if [ -r $script ] ; then
+    . $script
+  fi
+done
+
+unset script RED GREEN NORMAL
+
+# End /etc/profile
